@@ -435,9 +435,9 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 				case PERF_RECORD_MISC_HYPERVISOR:
 					printf("PERF_RECORD_MISC_HYPERVISOR"); break;
 				case PERF_RECORD_MISC_GUEST_KERNEL:
-					printf("PERF_RECORD_MISC_GUEST_KERNEL"); break;
+					printf("PERF_RECORD_MISC_GUEST_KERNEL >>>>>>>>>>>>>>>>>>>>>>>>>>>>>> "); break;
 				case PERF_RECORD_MISC_GUEST_USER:
-					printf("PERF_RECORD_MISC_GUEST_USER"); break;
+					printf("PERF_RECORD_MISC_GUEST_USER >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> "); break;
 				default:
 					printf("Unknown %d!\n",event->misc); break;
 			}
@@ -455,7 +455,7 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 					printf(",PERF_RECORD_MISC_SWITCH_OUT ");
 				}
 				else {
-					printf("UNKNOWN ALIAS!!! ");
+					printf(", UNKNOWN ALIAS!!! ");
 				}
 			}
 
@@ -466,6 +466,11 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 
 			if (event->misc & PERF_RECORD_MISC_EXT_RESERVED) {
 				printf(",PERF_RECORD_MISC_EXT_RESERVED ");
+			}
+		
+			if(event->misc & PERF_RECORD_MISC_PROC_MAP_PARSE_TIMEOUT)
+			{
+				printf(", PERF_RECORD_MISC_PROC_MAP_PARSE_TIMEOUT ");
 			}
 
 			printf("), Size=%d\n",event->size);

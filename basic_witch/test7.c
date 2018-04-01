@@ -26,14 +26,16 @@
 #include <strings.h>
 #include <time.h>
 
-#define PEBS_SAMPLE_TYPE PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_DATA_SRC | PERF_SAMPLE_ADDR | PERF_SAMPLE_CALLCHAIN
-#define WATCH_SAMPLE_TYPE PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_CALLCHAIN
+#define PEBS_SAMPLE_TYPE PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_ADDR | PERF_SAMPLE_CALLCHAIN
+#define WATCH_SAMPLE_TYPE PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_ADDR | PERF_SAMPLE_CALLCHAIN
 
 #define CHECK(x) ({int err = (x); \
 if (err) { \
 fprintf(stderr, "%s: Failed with %d on line %d of file %s\n", strerror(errno), err, __LINE__, __FILE__); \
 exit(-1); }\
 err;})
+
+#define NUM_MMAP_PAGES 8
 
 long long perf_mmap_read( void *our_mmap, int mmap_size,
                         long long prev_head,
@@ -44,12 +46,14 @@ long long perf_mmap_read( void *our_mmap, int mmap_size,
 
 static bool modify_watchpoint(int fd, uintptr_t address, int type, int len);
 
+int processId;
+
 int fd;
 int fdPEBS;
 
 static int pgsz;
-static void * mmapBuffer = 0;
-static void * mmapBufferPEBS = 0;
+static char * mmapBuffer;
+static char * mmapBufferPEBS;
 static int count=0;
 static int count2=0;
 
@@ -77,8 +81,8 @@ static inline void refresh_watchpoint(int fd, int fd2) {
 }
 
 
-static inline void * mmap_wp_buffer(int fd){
-    void * buf = mmap(0, 2 * pgsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+static inline char * mmap_wp_buffer(int fd){
+    char * buf = mmap(NULL, (1+NUM_MMAP_PAGES) * pgsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (buf == MAP_FAILED) {
 		perror("mmap");
 		exit(-1);
@@ -87,7 +91,7 @@ static inline void * mmap_wp_buffer(int fd){
 }
 
 static inline void unmap_wp_buffer(void * buf){
-    CHECK(munmap(buf, 2 * pgsz));
+    CHECK(munmap(buf, (1+NUM_MMAP_PAGES) * pgsz));
 }
 
 #define RAW_NONE        0
@@ -97,7 +101,7 @@ static void watchpoint_signal_handler(int signum, siginfo_t *info, void *context
 	disable_watchpoint(fd, NULL);
 	printf("WatchPoint +++++++ \n");
 	long long addr = 0;
-	prev_head=perf_mmap_read(mmapBuffer, 2, prev_head,
+	prev_head=perf_mmap_read(mmapBuffer, NUM_MMAP_PAGES, prev_head,
                 WATCH_SAMPLE_TYPE, 0, 0,
                 NULL, 0, NULL, RAW_NONE, &addr);
 	printf("WatchPoint -------- \n");
@@ -112,12 +116,12 @@ static void pebs_signal_handler(int signum, siginfo_t *info, void *context){
         count2++;
 	long long addr = 0;
 	printf("PEBS <<<<< \n");
-	prev_headPEBS=perf_mmap_read(mmapBufferPEBS, 2, prev_headPEBS,
+	prev_headPEBS=perf_mmap_read(mmapBufferPEBS, NUM_MMAP_PAGES, prev_headPEBS,
                 PEBS_SAMPLE_TYPE, 0, 0,
 		NULL, 0, NULL, RAW_NONE, &addr);
-	modify_watchpoint(fd, (uintptr_t) addr, HW_BREAKPOINT_W | HW_BREAKPOINT_R, HW_BREAKPOINT_LEN_1);
+	//modify_watchpoint(fd, (uintptr_t) addr, HW_BREAKPOINT_W | HW_BREAKPOINT_R, HW_BREAKPOINT_LEN_1);
 	printf("PEBS >>>>\n");
-	refresh_watchpoint(fd, fdPEBS);
+	enable_watchpoint(fd, fdPEBS);
         return;
 }
 
@@ -154,7 +158,7 @@ static void InitConfig(){
         exit(-1);
     }
         
-    pgsz = sysconf(_SC_PAGESIZE);
+    pgsz = getpagesize();//sysconf(_SC_PAGESIZE);
     
 }
 
@@ -169,17 +173,18 @@ static inline int create_watchpoint(uintptr_t address, int type, int len) {
         .sample_period          = 1,
         .sample_type            = WATCH_SAMPLE_TYPE,
         .exclude_user           = 0,
-        .exclude_kernel         = 1,
+        .exclude_kernel         = 0,
         .exclude_hv             = 0,
-//	.exclude_guest		= 0,
- //       .exclude_host           = 1,
+	.exclude_guest		= 0,
+        .exclude_host           = 1,
         .disabled               = 0, /* enabled */
+	.exclude_callchain_kernel = 0,
     };
         // fresh creation
         // Create the perf_event for this thread on all CPUs with no event group
 //        int perf_fd = perf_event_open(&pe, 0, -1, -1 /*group*/, 0);
 //	int perf_fd = perf_event_open(&pe, -1, 1, -1 /*group*/, 0);
-	int perf_fd = perf_event_open(&pe, 8842, -1, -1 /*group*/, 0);
+	int perf_fd = perf_event_open(&pe, processId, -1, -1 /*group*/, 0);
         if (perf_fd == -1) {
             perror("perf_event_open");
 		  exit (-1);
@@ -215,6 +220,7 @@ static inline void distroy_watchpoint(int fd){
 
 static inline bool modify_watchpoint(int fd, uintptr_t address, int type, int len) {
     // Perf event settings
+#if 0
     struct perf_event_attr pe = {
         .type                   = PERF_TYPE_BREAKPOINT,
         .size                   = sizeof(struct perf_event_attr),
@@ -223,10 +229,28 @@ static inline bool modify_watchpoint(int fd, uintptr_t address, int type, int le
 	   .bp_addr = (uintptr_t) address,
         .sample_period          = 1,
         .sample_type            = WATCH_SAMPLE_TYPE,
-        .exclude_user           = 0,
-        .exclude_kernel         = 1,
-        .exclude_hv             = 0,
+//        .exclude_user           = 0,
+  //      .exclude_kernel         = 1,
+    //    .exclude_hv             = 0,
         .disabled               = 0, /* enabled */
+    };
+#endif
+
+    struct perf_event_attr pe = {
+        .type                   = PERF_TYPE_BREAKPOINT,
+        .size                   = sizeof(struct perf_event_attr),
+        .bp_type                = type,
+        .bp_len                 = len,
+           .bp_addr = (uintptr_t) address,
+        .sample_period          = 1,
+        .sample_type            = WATCH_SAMPLE_TYPE,
+        .exclude_user           = 0,
+        .exclude_kernel         = 0,
+        .exclude_hv             = 0,
+        .exclude_guest          = 0,
+        .exclude_host           = 1,
+        .disabled               = 0, /* enabled */
+        .exclude_callchain_kernel = 0,
     };
     CHECK(ioctl(fd, PERF_EVENT_IOC_MODIFY_ATTRIBUTES, (unsigned long) (&pe)));
 }
@@ -279,21 +303,23 @@ static inline int create_pebsevent() {
         .sample_period          = 1003,
         .sample_type            = PEBS_SAMPLE_TYPE,
         .exclude_user           = 0,
-        .exclude_kernel         = 1,
+        .exclude_kernel         = 0,
         .exclude_hv             = 0,
         .disabled               = 0, /* enabled */
-	.config			= 0x1cd,
-	.config1		= 0x3,
-	.precise_ip		= 2,
-//	.exclude_guest		= 0,
-//	.exclude_host		= 1,
+        .config                 = 0x1cd,
+        .config1                = 0x3,
+        .precise_ip             = 3,
+        .exclude_guest          = 0,
+        .exclude_host           = 0,
+        .exclude_callchain_kernel = 0,
+        .read_format            = PERF_FORMAT_GROUP | PERF_FORMAT_ID,
+        .task                   = 1,
     };
-
         // fresh creation
         // Create the perf_event for this thread on all CPUs with no event group
  //       int perf_fd = perf_event_open(&pe, 0, -1, -1 /*group*/, 0);
 //	int perf_fd = perf_event_open(&pe, -1, 1, -1 /*group*/, 0);
-	int perf_fd = perf_event_open(&pe, 8842, -1, -1 /*group*/, 0);
+	int perf_fd = perf_event_open(&pe, processId, -1, -1 /*group*/, 0);
         if (perf_fd == -1) {
             perror("perf_event_open");
                   exit (-1);
@@ -384,22 +410,26 @@ static void naive_matrix_multiply(int quiet) {
 #define N 10
 //(1000000)
 char dummy[N+1];
-int main(){
+int main(int argc, char *argv[]){
         /* Checks the correctness of changing between read and write accesses */
+	if( argc == 2 ) {
+	      printf("The argument supplied is %s\n", argv[1]);
+   	}
+	else
+		return 0;
+
+	processId = atoi(argv[1]);
+	
+
         InitConfig();
 
         count = 0;
 
-        clock_t t3  = clock();
 	fdPEBS = create_pebsevent();
         fd = create_watchpoint((uintptr_t) &dummy[0], HW_BREAKPOINT_W | HW_BREAKPOINT_R, HW_BREAKPOINT_LEN_1);
-   //     for(int i = 0 ; i < N; i++){
-//		naive_matrix_multiply(1);
-  //      }
 	while(true);
 	distroy_pebsevent(fdPEBS);
         distroy_watchpoint(fd);
-        clock_t t4  = clock();
 
 	
 	printf("total pebs count %d\n",count2);	
